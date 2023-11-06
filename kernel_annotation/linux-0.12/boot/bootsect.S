@@ -2,7 +2,17 @@
 ! SYS_SIZE is the number of clicks (16 bytes) to be loaded.
 ! 0x3000 is 0x30000 bytes = 196kB, more than enough for current
 ! versions of linux
+! SYS_SIZE 是要加载的系统模块长度。 长度单位是节（ paragraph） ，每节 16 字节。 这里 0x3000 共为
+! 0x30000 字节=196KB。 若以 1024 字节为 1KB 计，则应该是 192KB。对于当前内核版本这个空间长度
+! 已足够了。当该值为 0x8000 时，表示内核最大为 512KB。因为内存 0x90000 处开始存放移动后的
+! bootsect 和 setup 的代码，因此该值最大不得超过 0x9000（表示 584KB）。
 !
+! 头文件 linux/config.h 中定义了内核用到的一些常数符号和 Linus 自己使用的默认硬盘参数块。
+! 例如其中定义了以下一些常数：
+! DEF_SYSSIZE = 0x3000 - 默认系统模块长度。单位是节，每节为 16 字节；
+! DEF_INITSEG = 0x9000 - 默认本程序代码移动目的段位置；
+! DEF_SETUPSEG = 0x9020 - 默认 setup 程序代码段位置；
+! DEF_SYSSEG = 0x1000 - 默认从磁盘加载系统模块到内存的段位置
 #include <linux/config.h>
 SYSSIZE = DEF_SYSSIZE
 !
@@ -24,6 +34,26 @@ SYSSIZE = DEF_SYSSIZE
 ! read errors will result in a unbreakable loop. Reboot by hand. It
 ! loads pretty fast by getting whole sectors at a time whenever possible.
 
+! bootsect.s 被 ROM BIOS 启动子程序加载至 0x7c00 (31KB)处，并将自己移到了地址 0x90000
+! (576KB)处，并跳转至那里。
+!
+! 它然后使用 BIOS 中断将'setup'直接加载到自己的后面(0x90200)(576.5KB)，并将 system 加
+! 载到地址 0x10000 处。
+!
+! 注意! 目前的内核系统最大长度限制为(8*65536)(512KB)字节，即使是在将来这也应该没有问
+! 题的。我想让它保持简单明了。这样 512KB 的最大内核长度应该足够了，尤其是这里没有象
+! MINIX 中一样包含缓冲区高速缓冲。
+!
+! 加载程序已经做得够简单了，所以持续地读操作出错将导致死循环。只能手工重启。只要可能，
+! 通过一次读取所有的扇区，加载过程可以做得很快。
+
+! 伪指令（伪操作符） .globl 或.global 用于定义随后的标识符是外部的或全局的，并且即使不
+! 使用也强制引入。 .text、 .data 和.bss 用于分别定义当前代码段、数据段和未初始化数据段。
+! 在链接多个目标模块时，链接程序（ ld86） 会根据它们的类别把各个目标模块中的相应段分别
+! 组合（合并）在一起。这里把三个段都定义在同一重叠地址范围中，因此本程序实际上不分段。
+! 另外，后面带冒号的字符串是标号，例如下面的'begtext:'。
+! 一条汇编语句通常由标号（可选）、指令助记符（指令名）和操作数三个字段组成。标号位于
+! 一条指令的第一个字段。它代表其所在位置的地址，通常指明一个跳转指令的目标位置
 .globl begtext, begdata, begbss, endtext, enddata, endbss
 .text
 begtext:
@@ -33,29 +63,52 @@ begdata:
 begbss:
 .text
 
-SETUPLEN = 4				! nr of setup-sectors
-BOOTSEG  = 0x07c0			! original address of boot-sector
-INITSEG  = DEF_INITSEG			! we move boot here - out of the way
-SETUPSEG = DEF_SETUPSEG			! setup starts here
-SYSSEG   = DEF_SYSSEG			! system loaded at 0x10000 (65536).
-ENDSEG   = SYSSEG + SYSSIZE		! where to stop loading
+! 下面等号'='或符号'EQU'用于定义标识符或标号所代表的值
+SETUPLEN = 4				! nr of setup-sectors 		setup 程序代码占用磁盘扇区数(setup-sectors)值；
+BOOTSEG  = 0x07c0			! original address of boot-sector	bootsect 代码所在内存原始段地址；
+INITSEG  = DEF_INITSEG			! we move boot here - out of the way 值为0x9000，将 bootsect 移到位置 0x90000 - 避开系统模块占用处；
+SETUPSEG = DEF_SETUPSEG			! setup starts here		值为：0x9020，setup 程序从内存 0x90200 处开始；
+SYSSEG   = DEF_SYSSEG			! system loaded at 0x10000 (65536).		值为：0x1000,system 模块加载到 0x10000（ 64 KB） 处；
+ENDSEG   = SYSSEG + SYSSIZE		! where to stop loading 	值为：0x1000 + 0x3000 停止加载的段地址
 
 ! ROOT_DEV & SWAP_DEV are now written by "build".
-ROOT_DEV = 0
-SWAP_DEV = 0
+! 根文件系统设备号 ROOT_DEV 和交换设备号 SWAP_DEV 现在由 tools 目录下的 build 程序写入。
+! 设备号 0x306 指定根文件系统设备是第 2 个硬盘的第 1 个分区。 当年 Linus 是在第 2 个硬盘上
+! 安装了 Linux 0.11 系统，所以这里 ROOT_DEV 被设置为 0x306。在编译这个内核时你可以根据
+! 自己根文件系统所在设备位置修改这个设备号。 例如，若你的根文件系统在第 1 个硬盘的第 1 个
+! 分区上，那么该值应该为 0x0301，即（ 0x01, 0x03） 。 这个设备号是 Linux 系统老式的硬盘设备
+! 号命名方式，硬盘设备号具体值的含义如下：
+! 设备号=主设备号*256 + 次设备号（也即 dev_no = (major<<8) + minor ）
+! （主设备号： 1-内存,2-磁盘,3-硬盘,4-ttyx,5-tty,6-并行口,7-非命名管道）
+! 0x300 - /dev/hd0 - 代表整个第 1 个硬盘；
+! 0x301 - /dev/hd1 - 第 1 个盘的第 1 个分区；
+! …
+! 0x304 - /dev/hd4 - 第 1 个盘的第 4 个分区；
+! 0x305 - /dev/hd5 - 代表整个第 2 个硬盘；
+! 0x306 - /dev/hd6 - 第 2 个盘的第 1 个分区；
+! …
+! 0x309 - /dev/hd9 - 第 2 个盘的第 4 个分区；
+! 从 Linux 内核 0.95 版后就已经使用与现在内核相同的命名方法了。
+ROOT_DEV = 0	! 根文件系统设备使用与系统引导时同样的设备；
+SWAP_DEV = 0	! 交换设备使用与系统引导时同样的设备；
 
-entry start
+
+! 伪指令 entry 迫使链接程序在生成的执行程序（ a.out）中包含指定的标识符或标号。这里是
+! 程序执行开始点。 49 -- 58 行作用是将自身(bootsect)从目前段位置 0x07c0(31KB) 移动到
+! 0x9000(576KB) 处，共 256 字（ 512 字节），然后跳转到移动后代码的 go 标号处，也即本程
+! 序的下一语句处。
+entry start		! 告知链接程序，程序从 start 标号开始执行
 start:
-	mov	ax,#BOOTSEG
+	mov	ax,#BOOTSEG		! 将 ds 段寄存器置为 0x7C0；
 	mov	ds,ax
-	mov	ax,#INITSEG
+	mov	ax,#INITSEG		! 将 es 段寄存器置为 0x9000；
 	mov	es,ax
-	mov	cx,#256
-	sub	si,si
-	sub	di,di
-	rep
-	movw
-	jmpi	go,INITSEG
+	mov	cx,#256			! 设置移动计数值=256 字（ 512 字节）；
+	sub	si,si			! 将si置为0x0000，源地址 ds:si = 0x07C0:0x0000
+	sub	di,di			! 将di置为0x0000目的地址 es:di = 0x9000:0x0000
+	rep					! 重复执行并递减 cx 的值，直到 cx = 0 为止
+	movw				! 即 movs 指令。从内存[si]处移动 cx 个字到[di]处。
+	jmpi	go,INITSEG	! 段间跳转（ Jump Intersegment） 。这里 INITSEG指出跳转到的段地址， 标号 go 是段内偏移地址
 
 go:	mov	ax,cs		
 	mov	dx,#0xfef4	! arbitrary value >>512 - disk parm size
