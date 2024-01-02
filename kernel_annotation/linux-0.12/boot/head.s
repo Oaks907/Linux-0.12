@@ -11,9 +11,14 @@
  * the page directory will exist. The startup code will be overwritten by
  * the page directory.
  */
+ /*
+* head.s 含有 32 位启动代码。
+* 注意!!! 32 位启动代码是从绝对地址 0x00000000 开始的，这里也同样是页目录将存在的地方，
+* 因此这里的启动代码将被页目录覆盖掉。
+*/
 .text
 .globl _idt,_gdt,_pg_dir,_tmp_floppy_area
-_pg_dir:
+_pg_dir:			# 页目录将会存放在这里
 startup_32:
 	movl $0x10,%eax
 	mov %ax,%ds
